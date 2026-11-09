@@ -2,7 +2,7 @@
 //! and symbols vary with firmware; existence checks cannot establish ABI compatibility.
 //! Calls run in a disposable subprocess so vendor output and crashes stay isolated.
 
-use std::{ffi::c_void, mem::MaybeUninit};
+use std::{ffi::c_void, fs, mem::MaybeUninit, path::Path};
 
 use anyhow::{Context, Result};
 use libloading::Library;
@@ -66,13 +66,18 @@ impl Session {
         })
     }
 
-    fn request(&mut self, request: &[u8]) -> Result<Vec<u8>> {
+    fn request(&mut self, request: &[u8], dump_dir: Option<&Path>) -> Result<Vec<u8>> {
         let command = request
             .get(..4)
             .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
             .map(u32::from_le_bytes)
             .unwrap_or(0);
         let mut request = request.to_vec();
+        if let Some(directory) = dump_dir {
+            // The exchange directory is a private 0700 temporary directory created by
+            // the worker. Writing both sides makes firmware-specific TA framing debuggable.
+            let _ = fs::write(directory.join("request.bin"), &request);
+        }
         // A nonzero status sentinel prevents untouched response storage looking valid.
         let mut response = vec![0; BUFFER_SIZE];
         response[..4].copy_from_slice(&i32::MIN.to_le_bytes());
@@ -87,6 +92,9 @@ impl Session {
                 response.len() as u32,
             )
         };
+        if let Some(directory) = dump_dir {
+            let _ = fs::write(directory.join("response.bin"), &response);
+        }
         if status != 0 {
             return Err(DeviceRkpError::Transport(format!(
                 "send_cmd returned {status} for command 0x{command:04x}, request length {}",
@@ -131,6 +139,6 @@ impl Drop for Session {
     }
 }
 
-pub(crate) fn request(bytes: &[u8]) -> Result<Vec<u8>> {
-    Session::open()?.request(bytes)
+pub(crate) fn request(bytes: &[u8], dump_dir: Option<&Path>) -> Result<Vec<u8>> {
+    Session::open()?.request(bytes, dump_dir)
 }

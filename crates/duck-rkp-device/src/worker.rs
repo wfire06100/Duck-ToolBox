@@ -66,9 +66,7 @@ pub(crate) fn sign(paths: &AppPaths, request: &[u8]) -> Result<Vec<u8>> {
     let exchange = tempfile::Builder::new()
         .prefix("rkp-device-")
         .permissions(fs::Permissions::from_mode(0o700))
-        .tempdir_in(&paths.tmp_dir)
-        .context("create the worker exchange directory")
-        .map_err(local)?;
+        .tempdir_in(&paths.tmp_dir)?;
     fs::write(exchange.path().join("request.bin"), request)
         .context("write the worker request")
         .map_err(local)?;
@@ -99,7 +97,7 @@ pub(crate) fn execute(exchange: &Path) -> Result<()> {
     let result = (|| {
         let request = read_exchange_file(&exchange.join("request.bin"), MAX_REQUEST_SIZE)?;
         protocol::ta_payload(&request)?;
-        native_request(&request)
+        native_request(&request, Some(exchange))
     })();
     let reply = Reply::from_result(result);
     let encoded = serde_json::to_vec(&reply).context("encode the worker reply")?;
@@ -109,14 +107,14 @@ pub(crate) fn execute(exchange: &Path) -> Result<()> {
     Ok(())
 }
 
-fn native_request(request: &[u8]) -> Result<Vec<u8>> {
+fn native_request(request: &[u8], dump_dir: Option<&Path>) -> Result<Vec<u8>> {
     #[cfg(all(target_os = "android", target_arch = "aarch64"))]
     {
-        crate::keymint::request(request)
+        crate::keymint::request(request, dump_dir)
     }
     #[cfg(not(all(target_os = "android", target_arch = "aarch64")))]
     {
-        let _ = request;
+        let _ = (request, dump_dir);
         Err(DeviceRkpError::UnsupportedDevice("Android arm64 required".into()).into())
     }
 }
@@ -178,8 +176,8 @@ mod tests {
     #[test]
     fn worker_reply_payloads_are_bounded() {
         assert_eq!(
-            Reply::Payload(vec![1, 2, 3]).into_result().unwrap(),
-            [1, 2, 3]
+            Reply::Payload(vec![1, 2, 3]).into_result(),
+            Ok(vec![1, 2, 3])
         );
         let error = Reply::Payload(vec![0; BUFFER_SIZE + 1])
             .into_result()
