@@ -63,11 +63,18 @@ public final class RkpV1Bridge {
                 .getMethod("asInterface", binder).invoke(null, service);
         Object info = api.getMethod("getHardwareInfo").invoke(proxy);
         int curve = info.getClass().getField("supportedEekCurve").getInt(info);
-        byte[] eek;
-        if (curve == 1) eek = p256;
-        else if (curve == 2) eek = x25519;
-        else throw new IOException("unsupported EEK curve: " + curve);
-        if (eek.length == 0) throw new IOException("server supplied no EEK chain for curve " + curve);
+
+        byte[][] candidates;
+        if (curve == 1) {
+            candidates = new byte[][] {p256, x25519};
+        } else if (curve == 2) {
+            candidates = new byte[][] {x25519, p256};
+        } else {
+            // Some Qualcomm firmware reports an unsupported/unknown curve (0),
+            // including the POCO F8 Pro. Try the available EEK chains rather than
+            // failing before KeyMint has had an opportunity to accept one.
+            candidates = new byte[][] {x25519, p256};
+        }
 
         Class<?> keyClass = Class.forName(PREFIX + "MacedPublicKey");
         Object key = keyClass.getConstructor().newInstance();
@@ -76,29 +83,53 @@ public final class RkpV1Bridge {
         Array.set(keys, 0, key);
         Class<?> deviceClass = Class.forName(PREFIX + "DeviceInfo");
         Class<?> protectedClass = Class.forName(PREFIX + "ProtectedData");
-        Object device = deviceClass.getConstructor().newInstance();
-        Object protectedData = protectedClass.getConstructor().newInstance();
-        byte[] mac = (byte[]) api.getMethod("generateCertificateRequest",
-                boolean.class, keys.getClass(), byte[].class, byte[].class,
-                deviceClass, protectedClass).invoke(proxy, false, keys, eek, challenge,
-                device, protectedData);
-        byte[] deviceBytes = (byte[]) deviceClass.getField("deviceInfo").get(device);
-        byte[] protectedBytes = (byte[]) protectedClass.getField("protectedData").get(protectedData);
-        if (mac == null || mac.length != 32) return errorReply(3, 0, "invalid keysToSign MAC");
-        if (deviceBytes == null || deviceBytes.length == 0 || deviceBytes.length > LIMIT) {
-            return errorReply(3, 0, "invalid DeviceInfo length");
+
+        Throwable lastFailure = null;
+        for (byte[] eek : candidates) {
+            if (eek == null || eek.length == 0) continue;
+            Object device = deviceClass.getConstructor().newInstance();
+            Object protectedData = protectedClass.getConstructor().newInstance();
+            try {
+                byte[] mac = (byte[]) api.getMethod("generateCertificateRequest",
+                        boolean.class, keys.getClass(), byte[].class, byte[].class,
+                        deviceClass, protectedClass).invoke(proxy, false, keys, eek, challenge,
+                        device, protectedData);
+                byte[] deviceBytes = (byte[]) deviceClass.getField("deviceInfo").get(device);
+                byte[] protectedBytes = (byte[]) protectedClass.getField("protectedData").get(protectedData);
+                if (mac == null || mac.length != 32) {
+                    throw new IOException("invalid keysToSign MAC");
+                }
+                if (deviceBytes == null || deviceBytes.length == 0 || deviceBytes.length > LIMIT) {
+                    throw new IOException("invalid DeviceInfo length");
+                }
+                if (protectedBytes == null || protectedBytes.length == 0 || protectedBytes.length > LIMIT) {
+                    throw new IOException("invalid ProtectedData length");
+                }
+                java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+                try (DataOutputStream output = new DataOutputStream(buffer)) {
+                    output.writeInt(0);
+                    writeBytes(output, mac);
+                    writeBytes(output, deviceBytes);
+                    writeBytes(output, protectedBytes);
+                }
+                return buffer.toByteArray();
+            } catch (InvocationTargetException failure) {
+                Throwable cause = failure.getCause();
+                lastFailure = cause == null ? failure : cause;
+            } catch (Throwable failure) {
+                lastFailure = failure;
+            }
         }
-        if (protectedBytes == null || protectedBytes.length == 0 || protectedBytes.length > LIMIT) {
-            return errorReply(3, 0, "invalid ProtectedData length");
+
+        if (lastFailure instanceof ServiceSpecificException) {
+            ServiceSpecificException exception = (ServiceSpecificException) lastFailure;
+            throw exception;
         }
-        java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
-        try (DataOutputStream output = new DataOutputStream(buffer)) {
-            output.writeInt(0);
-            writeBytes(output, mac);
-            writeBytes(output, deviceBytes);
-            writeBytes(output, protectedBytes);
+        if (lastFailure != null) {
+            throw lastFailure;
         }
-        return buffer.toByteArray();
+        throw new IOException("unsupported EEK curve: " + curve
+                + "; no compatible EEK chain was supplied");
     }
 
     private static byte[] errorReply(int status, int code, String message) throws IOException {
@@ -124,5 +155,11 @@ public final class RkpV1Bridge {
         if (bytes == null || bytes.length > LIMIT) throw new IOException("invalid output length");
         output.writeInt(bytes.length);
         output.write(bytes);
+    }
+
+    private static final class ServiceSpecificException extends RuntimeException {
+        ServiceSpecificException(String message) {
+            super(message);
+        }
     }
 }
