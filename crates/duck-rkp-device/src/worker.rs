@@ -139,15 +139,13 @@ pub(crate) fn execute(exchange: &Path) -> Result<()> {
 pub(crate) fn dump_hex(exchange: &Path) -> Result<()> {
     for name in ["request.bin", "response.bin"] {
         let source = exchange.join(name);
-        let bytes = fs::read(&source)
-            .with_context(|| format!("read {}", source.display()))?;
+        let bytes = fs::read(&source).with_context(|| format!("read {}", source.display()))?;
         let hex = bytes
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let destination = exchange.join(name.replace(".bin", ".hex"));
-        fs::write(&destination, hex)
-            .with_context(|| format!("write {}", destination.display()))?;
+        fs::write(&destination, hex).with_context(|| format!("write {}", destination.display()))?;
     }
     Ok(())
 }
