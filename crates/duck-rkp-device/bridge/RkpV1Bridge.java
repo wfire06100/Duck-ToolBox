@@ -62,8 +62,15 @@ public final class RkpV1Bridge {
         if (curve == 0) {
             // No EEK is used by the modern CSR method. Preserve the supplied key:
             // a HAL-generated replacement would not match the exportable private key.
-            byte[] csr = (byte[]) api.getMethod("generateCertificateRequestV2",
-                    keys.getClass(), byte[].class).invoke(proxy, keys, challenge);
+            byte[] csr;
+            try {
+                csr = (byte[]) api.getMethod("generateCertificateRequestV2",
+                        keys.getClass(), byte[].class).invoke(proxy, keys, challenge);
+            } catch (InvocationTargetException failure) {
+                Throwable cause = failure.getCause() == null ? failure : failure.getCause();
+                return errorReply(1, serviceCode(cause),
+                        "AIDL V2 HAL rejected the software-key MAC: " + cause);
+            }
             if (csr == null || csr.length == 0 || csr.length > LIMIT) {
                 return errorReply(3, 0, "invalid AIDL V2 CSR length");
             }
@@ -81,15 +88,32 @@ public final class RkpV1Bridge {
         Class<?> protectedClass = Class.forName(PREFIX + "ProtectedData");
         Object device = deviceClass.getConstructor().newInstance();
         Object protectedData = protectedClass.getConstructor().newInstance();
-        byte[] mac = (byte[]) api.getMethod("generateCertificateRequest",
-                boolean.class, keys.getClass(), byte[].class, byte[].class,
-                deviceClass, protectedClass).invoke(proxy, false, keys, eek, challenge, device, protectedData);
+        byte[] mac;
+        try {
+            mac = (byte[]) api.getMethod("generateCertificateRequest",
+                    boolean.class, keys.getClass(), byte[].class, byte[].class,
+                    deviceClass, protectedClass).invoke(proxy, false, keys, eek, challenge, device, protectedData);
+        } catch (InvocationTargetException failure) {
+            Throwable cause = failure.getCause() == null ? failure : failure.getCause();
+            return errorReply(1, serviceCode(cause),
+                    "AIDL V1 HAL rejected the software-key MAC: " + cause);
+        }
         byte[] deviceBytes = (byte[]) deviceClass.getField("deviceInfo").get(device);
         byte[] protectedBytes = (byte[]) protectedClass.getField("protectedData").get(protectedData);
         if (mac == null || mac.length != 32) return errorReply(3, 0, "invalid keysToSign MAC");
         if (deviceBytes == null || deviceBytes.length == 0 || deviceBytes.length > LIMIT) return errorReply(3, 0, "invalid DeviceInfo length");
         if (protectedBytes == null || protectedBytes.length == 0 || protectedBytes.length > LIMIT) return errorReply(3, 0, "invalid ProtectedData length");
         return successReply(mac, deviceBytes, protectedBytes);
+    }
+
+    private static int serviceCode(Throwable failure) {
+        if (failure.getClass().getName().equals("android.os.ServiceSpecificException")) {
+            try {
+                return failure.getClass().getField("errorCode").getInt(failure);
+            } catch (ReflectiveOperationException ignored) {
+            }
+        }
+        return 0;
     }
 
     private static byte[] successReply(byte[] mac, byte[] device, byte[] protectedData) throws IOException {
