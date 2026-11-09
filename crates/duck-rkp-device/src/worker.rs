@@ -105,7 +105,9 @@ fn preserve_exchange(exchange: &Path, tmp_dir: &Path) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
-    let destination = tmp_dir.join("rkp-device-debug").join(format!("rkp-device-{stamp}"));
+    let destination = tmp_dir
+        .join("rkp-device-debug")
+        .join(format!("rkp-device-{stamp}"));
     if fs::create_dir_all(&destination).is_err() {
         return;
     }
