@@ -181,7 +181,13 @@ fn issue_v1(
     // Internal Java envelope for modern HALs: legacy MACs are exactly 32 bytes,
     // so this seven-byte marker cannot be confused with valid legacy evidence.
     if response.mac == b"AIDL-V2" && response.device_info.is_empty() {
-        return finish_v2(response.protected_data, Backend::Aidl, key, eek, fingerprint);
+        return finish_v2(
+            response.protected_data,
+            Backend::Aidl,
+            key,
+            eek,
+            fingerprint,
+        );
     }
     finish_v1(response, Backend::Aidl, key, eek, fingerprint)
 }
