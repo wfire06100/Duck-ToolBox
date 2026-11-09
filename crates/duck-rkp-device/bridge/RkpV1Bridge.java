@@ -5,6 +5,7 @@ import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.charset.StandardCharsets;
 
+/** Uses the device AIDL proxy without replacing the caller's software public key. */
 public final class RkpV1Bridge {
     private static final String PREFIX = "android.hardware.security.keymint.";
     private static final String SERVICE = PREFIX + "IRemotelyProvisionedComponent";
@@ -52,51 +53,54 @@ public final class RkpV1Bridge {
         Object proxy = Class.forName(SERVICE + "$Stub").getMethod("asInterface", binder).invoke(null, service);
         Object info = api.getMethod("getHardwareInfo").invoke(proxy);
         int curve = info.getClass().getField("supportedEekCurve").getInt(info);
-        byte[][] candidates;
-        if (curve == 1) candidates = new byte[][] {p256};
-        else if (curve == 2) candidates = new byte[][] {x25519};
-        else if (curve == 0) candidates = new byte[][] {x25519, p256};
-        else throw new IOException("unsupported EEK curve: " + curve);
-
         Class<?> keyClass = Class.forName(PREFIX + "MacedPublicKey");
         Object key = keyClass.getConstructor().newInstance();
         keyClass.getField("macedKey").set(key, maced);
         Object keys = Array.newInstance(keyClass, 1);
         Array.set(keys, 0, key);
+
+        if (curve == 0) {
+            // No EEK is used by the modern CSR method. Preserve the supplied key:
+            // a HAL-generated replacement would not match the exportable private key.
+            byte[] csr = (byte[]) api.getMethod("generateCertificateRequestV2",
+                    keys.getClass(), byte[].class).invoke(proxy, keys, challenge);
+            if (csr == null || csr.length == 0 || csr.length > LIMIT) {
+                return errorReply(3, 0, "invalid AIDL V2 CSR length");
+            }
+            // Internal envelope: an impossible legacy MAC length identifies V2.
+            // Rust must validate the full CSR before any remote submission.
+            return successReply("AIDL-V2".getBytes(StandardCharsets.US_ASCII), new byte[0], csr);
+        }
+
+        byte[] eek;
+        if (curve == 1) eek = p256;
+        else if (curve == 2) eek = x25519;
+        else throw new IOException("unsupported EEK curve: " + curve);
+        if (eek.length == 0) throw new IOException("server supplied no EEK chain for curve " + curve);
         Class<?> deviceClass = Class.forName(PREFIX + "DeviceInfo");
         Class<?> protectedClass = Class.forName(PREFIX + "ProtectedData");
-        Throwable lastFailure = null;
-        for (byte[] eek : candidates) {
-            if (eek.length == 0) continue;
-            Object device = deviceClass.getConstructor().newInstance();
-            Object protectedData = protectedClass.getConstructor().newInstance();
-            byte[] mac;
-            try {
-                mac = (byte[]) api.getMethod("generateCertificateRequest",
-                        boolean.class, keys.getClass(), byte[].class, byte[].class,
-                        deviceClass, protectedClass).invoke(proxy, false, keys, eek, challenge, device, protectedData);
-            } catch (InvocationTargetException failure) {
-                Throwable cause = failure.getCause();
-                if (cause == null || !cause.getClass().getName().equals("android.os.ServiceSpecificException")) throw failure;
-                lastFailure = cause;
-                continue;
-            }
-            byte[] deviceBytes = (byte[]) deviceClass.getField("deviceInfo").get(device);
-            byte[] protectedBytes = (byte[]) protectedClass.getField("protectedData").get(protectedData);
-            if (mac == null || mac.length != 32) return errorReply(3, 0, "invalid keysToSign MAC");
-            if (deviceBytes == null || deviceBytes.length == 0 || deviceBytes.length > LIMIT) return errorReply(3, 0, "invalid DeviceInfo length");
-            if (protectedBytes == null || protectedBytes.length == 0 || protectedBytes.length > LIMIT) return errorReply(3, 0, "invalid ProtectedData length");
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            try (DataOutputStream output = new DataOutputStream(buffer)) {
-                output.writeInt(0);
-                writeBytes(output, mac);
-                writeBytes(output, deviceBytes);
-                writeBytes(output, protectedBytes);
-            }
-            return buffer.toByteArray();
+        Object device = deviceClass.getConstructor().newInstance();
+        Object protectedData = protectedClass.getConstructor().newInstance();
+        byte[] mac = (byte[]) api.getMethod("generateCertificateRequest",
+                boolean.class, keys.getClass(), byte[].class, byte[].class,
+                deviceClass, protectedClass).invoke(proxy, false, keys, eek, challenge, device, protectedData);
+        byte[] deviceBytes = (byte[]) deviceClass.getField("deviceInfo").get(device);
+        byte[] protectedBytes = (byte[]) protectedClass.getField("protectedData").get(protectedData);
+        if (mac == null || mac.length != 32) return errorReply(3, 0, "invalid keysToSign MAC");
+        if (deviceBytes == null || deviceBytes.length == 0 || deviceBytes.length > LIMIT) return errorReply(3, 0, "invalid DeviceInfo length");
+        if (protectedBytes == null || protectedBytes.length == 0 || protectedBytes.length > LIMIT) return errorReply(3, 0, "invalid ProtectedData length");
+        return successReply(mac, deviceBytes, protectedBytes);
+    }
+
+    private static byte[] successReply(byte[] mac, byte[] device, byte[] protectedData) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (DataOutputStream output = new DataOutputStream(buffer)) {
+            output.writeInt(0);
+            writeBytes(output, mac);
+            writeBytes(output, device);
+            writeBytes(output, protectedData);
         }
-        if (lastFailure != null) throw lastFailure;
-        throw new IOException("server supplied no EEK chain for curve " + curve);
+        return buffer.toByteArray();
     }
 
     private static byte[] errorReply(int status, int code, String message) throws IOException {

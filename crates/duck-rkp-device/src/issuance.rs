@@ -141,6 +141,19 @@ pub(crate) fn issue(
     let request = protocol::build_request(&eek.challenge, &key.cose_public)?;
     let signed = exchange.csr(&request)?;
     let bytes = protocol::unwrap_csr(&signed)?;
+    finish_v2(bytes, Backend::Native, key, eek, fingerprint)
+}
+
+fn finish_v2(
+    bytes: Vec<u8>,
+    backend: Backend,
+    key: &EcKeyPair,
+    eek: &EekResponse,
+    fingerprint: Option<&str>,
+) -> Result<SignedCsr> {
+    if bytes.is_empty() || bytes.len() > protocol::BUFFER_SIZE {
+        return Err(DeviceRkpError::InvalidCsr("invalid device CSR length".into()).into());
+    }
     let bytes = duck_rkp::request::with_fingerprint(&bytes, fingerprint)
         .map_err(|error| DeviceRkpError::InvalidCsr(format!("V2 metadata: {error:#}")))?;
     if bytes.len() > protocol::BUFFER_SIZE {
@@ -152,7 +165,7 @@ pub(crate) fn issue(
     Ok(SignedCsr {
         bytes,
         protocol: Protocol::V2,
-        backend: Backend::Native,
+        backend,
         local_verify: Some(report),
     })
 }
@@ -165,6 +178,11 @@ fn issue_v1(
 ) -> Result<SignedCsr> {
     let request = v1::request(&eek.challenge, &key.cose_public, &eek.eek_chains)?;
     let response = exchange.csr_v1(&request)?;
+    // Internal Java envelope for modern HALs: legacy MACs are exactly 32 bytes,
+    // so this seven-byte marker cannot be confused with valid legacy evidence.
+    if response.mac == b"AIDL-V2" && response.device_info.is_empty() {
+        return finish_v2(response.protected_data, Backend::Aidl, key, eek, fingerprint);
+    }
     finish_v1(response, Backend::Aidl, key, eek, fingerprint)
 }
 
