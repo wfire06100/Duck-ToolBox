@@ -133,7 +133,10 @@ pub(super) fn write(
         properties.insert(key.into(), value);
     }
     properties.insert("kernel".into(), bounded_text(Path::new("/proc/version")));
-    properties.insert("module".into(), bounded_text(&paths.root.join("module.prop")));
+    properties.insert(
+        "module".into(),
+        bounded_text(&paths.root.join("module.prop")),
+    );
     let validation_error = protocol::ta_payload(request)
         .err()
         .map(|error| format!("{error:#}"));
