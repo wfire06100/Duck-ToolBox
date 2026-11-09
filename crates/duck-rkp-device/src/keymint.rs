@@ -43,15 +43,15 @@ impl Session {
         .into();
         let constructor = *unsafe {
             library.get::<Constructor>(
-                b"_ZN14keymasterutils14KeymasterUtilsC1E26keymaster_security_level_t\0",
+                b"_ZN14keymasterutils14KeymasterUtilsC1E26keymaster_security_level_t\\0",
             )
         }
         .context("resolve KeymasterUtils constructor")?;
         let destructor =
-            *unsafe { library.get::<Destructor>(b"_ZN14keymasterutils14KeymasterUtilsD1Ev\0") }
+            *unsafe { library.get::<Destructor>(b"_ZN14keymasterutils14KeymasterUtilsD1Ev\\0") }
                 .context("resolve KeymasterUtils destructor")?;
         let send = *unsafe {
-            library.get::<SendCommand>(b"_ZN14keymasterutils14KeymasterUtils8send_cmdEPvjS1_j\0")
+            library.get::<SendCommand>(b"_ZN14keymasterutils14KeymasterUtils8send_cmdEPvjS1_j\\0")
         }
         .context("resolve KeymasterUtils send_cmd")?;
         let mut object = Box::new(VendorObject([MaybeUninit::new(0); 0x40]));
@@ -67,6 +67,11 @@ impl Session {
     }
 
     fn request(&mut self, request: &[u8]) -> Result<Vec<u8>> {
+        let command = request
+            .get(..4)
+            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+            .map(u32::from_le_bytes)
+            .unwrap_or(0);
         let mut request = request.to_vec();
         // A nonzero status sentinel prevents untouched response storage looking valid.
         let mut response = vec![0; BUFFER_SIZE];
@@ -83,10 +88,40 @@ impl Session {
             )
         };
         if status != 0 {
-            return Err(DeviceRkpError::Transport(format!("send_cmd returned {status}")).into());
+            return Err(DeviceRkpError::Transport(format!(
+                "send_cmd returned {status} for command 0x{command:04x}, request length {}",
+                request.len()
+            ))
+            .into());
+        }
+        let response_status = i32::from_le_bytes(
+            response[..4]
+                .try_into()
+                .expect("response buffer is at least four bytes"),
+        );
+        if response_status != 0 {
+            let detail = format!(
+                "command 0x{command:04x}, request length {}, response prefix {}",
+                request.len(),
+                hex_prefix(&response)
+            );
+            return Err(DeviceRkpError::RejectedWithDetail {
+                status: response_status,
+                detail,
+            }
+            .into());
         }
         response_payload(&response)
     }
+}
+
+fn hex_prefix(response: &[u8]) -> String {
+    response
+        .iter()
+        .take(32)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 impl Drop for Session {
