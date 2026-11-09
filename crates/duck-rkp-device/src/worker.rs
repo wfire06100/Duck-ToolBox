@@ -176,8 +176,8 @@ mod tests {
     #[test]
     fn worker_reply_payloads_are_bounded() {
         assert_eq!(
-            Reply::Payload(vec![1, 2, 3]).into_result(),
-            Ok(vec![1, 2, 3])
+            Reply::Payload(vec![1, 2, 3]).into_result().unwrap(),
+            vec![1, 2, 3]
         );
         let error = Reply::Payload(vec![0; BUFFER_SIZE + 1])
             .into_result()
