@@ -133,6 +133,25 @@ pub(crate) fn execute(exchange: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Writes `request.hex` and `response.hex` beside the binary exchange files. This exists
+/// only because a phone terminal cannot easily attach binary files; it does not alter the
+/// exchange or send anything to the TA.
+pub(crate) fn dump_hex(exchange: &Path) -> Result<()> {
+    for name in ["request.bin", "response.bin"] {
+        let source = exchange.join(name);
+        let bytes = fs::read(&source)
+            .with_context(|| format!("read {}", source.display()))?;
+        let hex = bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let destination = exchange.join(name.replace(".bin", ".hex"));
+        fs::write(&destination, hex)
+            .with_context(|| format!("write {}", destination.display()))?;
+    }
+    Ok(())
+}
+
 fn native_request(request: &[u8], dump_dir: Option<&Path>) -> Result<Vec<u8>> {
     #[cfg(all(target_os = "android", target_arch = "aarch64"))]
     {
@@ -209,6 +228,28 @@ mod tests {
             .into_result()
             .unwrap_err();
         assert_eq!(crate::error::code_of(&error), "invalid_ta_response");
+    }
+
+    #[test]
+    fn hex_dumps_are_readable_text_and_do_not_modify_the_binary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("request.bin"), [0x22, 0x31, 0x00, 0x00]).unwrap();
+        fs::write(dir.path().join("response.bin"), [0xff, 0x00]).unwrap();
+
+        dump_hex(dir.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("request.hex")).unwrap(),
+            "22310000"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("response.hex")).unwrap(),
+            "ff00"
+        );
+        assert_eq!(
+            fs::read(dir.path().join("request.bin")).unwrap(),
+            [0x22, 0x31, 0x00, 0x00]
+        );
     }
 
     /// A Ctrl-C aimed at the CLI reaches the whole foreground process group, so the worker

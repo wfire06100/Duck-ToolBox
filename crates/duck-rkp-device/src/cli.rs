@@ -45,6 +45,11 @@ pub enum Command {
         #[arg(long)]
         exchange: PathBuf,
     },
+    /// Convert binary TA exchange dumps into readable hexadecimal files.
+    DumpHex {
+        #[arg(long)]
+        exchange: PathBuf,
+    },
 }
 
 fn dispatch<'a>(command: Command, ctx: &'a Context) -> BoxFuture<'a, CommandResult> {
@@ -92,6 +97,9 @@ fn dispatch<'a>(command: Command, ctx: &'a Context) -> BoxFuture<'a, CommandResu
             }
             Command::TaCsr { exchange } => {
                 worker::execute(&exchange).into_command("rkp-device.ta-csr", code_of)
+            }
+            Command::DumpHex { exchange } => {
+                worker::dump_hex(&exchange).into_command("rkp-device.dump-hex", code_of)
             }
         }
     })
