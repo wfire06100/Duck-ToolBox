@@ -70,27 +70,51 @@ pub(crate) fn sign(paths: &AppPaths, request: &[u8]) -> Result<Vec<u8>> {
     fs::write(exchange.path().join("request.bin"), request)
         .context("write the worker request")
         .map_err(local)?;
-    let executable = std::env::current_exe()
-        .context("locate this executable")
-        .map_err(local)?;
-    let mut command = Command::new(&executable);
-    command
-        .env("LD_LIBRARY_PATH", VENDOR_LIBRARY_PATH)
-        .args(["rkp-device", "ta-csr", "--exchange"])
-        .arg(exchange.path());
-    let status = process::run(&mut command, TIMEOUT)?;
-    let reply_path = exchange.path().join("reply.json");
-    if !status.success() || !reply_path.is_file() {
-        return Err(DeviceRkpError::Transport(format!(
-            "worker exited with {status}; vendor ABI may be incompatible"
-        ))
-        .into());
+    let result = (|| -> Result<Vec<u8>> {
+        let executable = std::env::current_exe()
+            .context("locate this executable")
+            .map_err(local)?;
+        let mut command = Command::new(&executable);
+        command
+            .env("LD_LIBRARY_PATH", VENDOR_LIBRARY_PATH)
+            .args(["rkp-device", "ta-csr", "--exchange"])
+            .arg(exchange.path());
+        let status = process::run(&mut command, TIMEOUT)?;
+        let reply_path = exchange.path().join("reply.json");
+        if !status.success() || !reply_path.is_file() {
+            return Err(DeviceRkpError::Transport(format!(
+                "worker exited with {status}; vendor ABI may be incompatible"
+            ))
+            .into());
+        }
+        let reply = read_exchange_file(&reply_path, MAX_REPLY_FILE).map_err(local)?;
+        serde_json::from_slice::<Reply>(&reply)
+            .context("parse the worker reply")
+            .map_err(|error| DeviceRkpError::InvalidResponse(format!("{error:#}")))?
+            .into_result()
+    })();
+    preserve_exchange(exchange.path(), &paths.tmp_dir);
+    result
+}
+
+/// The exchange directory is removed when its `TempDir` guard drops. Copy the raw TA
+/// exchange into a persistent debug directory so a rejected request can be inspected
+/// after the run; copying is best-effort and never changes the provisioning result.
+fn preserve_exchange(exchange: &Path, tmp_dir: &Path) {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let destination = tmp_dir.join("rkp-device-debug").join(format!("rkp-device-{stamp}"));
+    if fs::create_dir_all(&destination).is_err() {
+        return;
     }
-    let reply = read_exchange_file(&reply_path, MAX_REPLY_FILE).map_err(local)?;
-    serde_json::from_slice::<Reply>(&reply)
-        .context("parse the worker reply")
-        .map_err(|error| DeviceRkpError::InvalidResponse(format!("{error:#}")))?
-        .into_result()
+    for name in ["request.bin", "response.bin", "reply.json"] {
+        let source = exchange.join(name);
+        if source.is_file() {
+            let _ = fs::copy(&source, destination.join(name));
+        }
+    }
 }
 
 pub(crate) fn execute(exchange: &Path) -> Result<()> {
