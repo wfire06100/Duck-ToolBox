@@ -43,15 +43,15 @@ impl Session {
         .into();
         let constructor = *unsafe {
             library.get::<Constructor>(
-                b"_ZN14keymasterutils14KeymasterUtilsC1E26keymaster_security_level_t\\0",
+                b"_ZN14keymasterutils14KeymasterUtilsC1E26keymaster_security_level_t\0",
             )
         }
         .context("resolve KeymasterUtils constructor")?;
         let destructor =
-            *unsafe { library.get::<Destructor>(b"_ZN14keymasterutils14KeymasterUtilsD1Ev\\0") }
+            *unsafe { library.get::<Destructor>(b"_ZN14keymasterutils14KeymasterUtilsD1Ev\0") }
                 .context("resolve KeymasterUtils destructor")?;
         let send = *unsafe {
-            library.get::<SendCommand>(b"_ZN14keymasterutils14KeymasterUtils8send_cmdEPvjS1_j\\0")
+            library.get::<SendCommand>(b"_ZN14keymasterutils14KeymasterUtils8send_cmdEPvjS1_j\0")
         }
         .context("resolve KeymasterUtils send_cmd")?;
         let mut object = Box::new(VendorObject([MaybeUninit::new(0); 0x40]));
