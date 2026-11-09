@@ -14,10 +14,7 @@ pub(crate) enum DeviceRkpError {
     #[error("KeyMint transport failed: {0}")]
     Transport(String),
     #[error("KeyMint rejected the CSR request with status {status}: {detail}")]
-    RejectedWithDetail {
-        status: i32,
-        detail: String,
-    },
+    RejectedWithDetail { status: i32, detail: String },
     #[error("KeyMint rejected the CSR request with status {0}")]
     Rejected(i32),
     #[error("invalid KeyMint response: {0}")]
